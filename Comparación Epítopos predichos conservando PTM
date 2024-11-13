@@ -1,0 +1,409 @@
+import pandas as pd
+import re
+from tqdm import tqdm
+import time
+
+# Paso 1: Generar el diccionario de péptidos de alfa-sinucleína
+
+# Definir la nueva secuencia de la proteína alfa-sinucleína
+sequence = "MDVFMKGLSKAKEGVVAAAEKTKQGVAEAAGKTKEGVLYVGSKTKEGVVHGVATVAEKTKEQVTNVGGAVVTGVTAVAQKTVEGAGSIAAATGFVKKDQLGKNEEGAPQEGILEDMPVDPDNEAYEMPSEEGYQDYEPEA"
+
+# Diccionario de sitios que no pueden tener mismatches
+critical_sites = {
+    "Phosphorylation": [39, 126, 129, 133, 136],
+    "Ubiquitination": [1, 6, 10, 12, 21, 23, 32, 34, 43, 45, 96, 102],
+    "Nitration": [39, 125, 129, 133, 136],
+    "Truncation": [58, 74, 80, 84, 89, 97, 110, 102, 120, 125],
+    "SUMOylation": [96, 102],
+    "o-GlcNAcylation": [33, 59, 64, 72, 75, 81, 87]
+}
+
+# Generar péptidos a partir de la secuencia
+def generate_peptides(sequence, min_length=8, max_length=21):
+    peptides = []
+    seq_length = len(sequence)
+
+    for length in range(min_length, max_length + 1):
+        for start in range(seq_length - length + 1):
+            peptide = sequence[start:start + length]
+            peptides.append(peptide)
+
+    return peptides
+
+# Función para renombrar los péptidos
+def rename_peptide(peptide_sequence, full_sequence):
+    start_position = full_sequence.find(peptide_sequence)
+    if start_position == -1:
+        return "Not found"
+
+    start_position += 1
+    peptide_length = len(peptide_sequence)
+    new_name = f"{start_position}P{peptide_length}pep"
+    return new_name
+
+# Función para verificar si un péptido contiene posiciones críticas
+def contains_critical_site(peptide_sequence, start_position):
+    critical_positions = []
+    for mod_type, positions in critical_sites.items():
+        for pos in positions:
+            if start_position <= pos < start_position + len(peptide_sequence):
+                critical_positions.append(pos - start_position)  # Posición relativa en el péptido
+    return critical_positions
+
+# Generar péptidos y crear un DataFrame
+peptides = generate_peptides(sequence)
+data = {
+    'New Name': [rename_peptide(peptide, sequence) for peptide in peptides],
+    'Epitope - Name': peptides
+}
+df_peptides = pd.DataFrame(data)
+
+# Guardar el DataFrame como archivo FASTA
+output_fasta_path_1 = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\Peptidos AlphaSyn.fasta"
+
+def save_as_fasta(df, output_fasta_path):
+    with open(output_fasta_path, 'w') as fasta_file:
+        for index, row in df.iterrows():
+            new_name = row['New Name']
+            sequence = row['Epitope - Name']
+            fasta_file.write(f">{new_name}\n")
+            fasta_file.write(f"{sequence}\n")
+
+save_as_fasta(df_peptides, output_fasta_path_1)
+print(f"Archivo FASTA guardado en: {output_fasta_path_1}")
+
+# Convertir el archivo FASTA a diccionario y guardarlo como TXT
+output_dict_path_1 = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\Peptidos AlphaSyn diccionario.txt"
+diccionario_peptidos_1 = {}
+
+with open(output_fasta_path_1, 'r') as archivo:
+    nombre_peptido = None
+    for linea in archivo:
+        linea = linea.strip()
+        if linea.startswith(">"):
+            nombre_peptido = linea[1:]  # Guardar el nombre del péptido sin '>'
+        else:
+            diccionario_peptidos_1[nombre_peptido] = linea
+
+# Guardar el diccionario en un archivo TXT
+with open(output_dict_path_1, 'w') as archivo_txt:
+    for nombre, secuencia in diccionario_peptidos_1.items():
+        archivo_txt.write(f"{nombre}: {secuencia}\n")
+
+print(f"El diccionario de péptidos se ha guardado en {output_dict_path_1}.")
+
+
+#Paso 2: Filtrar por Rank menos o igual a 20
+# Ruta del archivo Excel original
+input_file = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\MHC II mouse.xlsx"
+
+# Ruta del archivo de salida (con los datos filtrados)
+output_file_filtrado = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\MHC II mouse filtrado.xlsx"
+
+# Leer el archivo Excel
+df = pd.read_excel(input_file)
+
+# Filtrar los datos en donde la columna "rank" sea menor o igual a 20
+df_filtrado = df[df['rank'] <= 20]
+
+# Guardar el archivo filtrado en un nuevo Excel
+df_filtrado.to_excel(output_file_filtrado, index=False)
+
+print(f"Archivo filtrado y guardado como {output_file_filtrado}")
+
+#Paso 2: Establecer nombre a cada secuencia
+# Ruta del archivo Excel
+excel_file_path = output_file_filtrado 
+
+# Cargar el archivo Excel
+df = pd.read_excel(excel_file_path)
+
+# Imprimir las columnas para verificar sus nombres
+print("Nombres de las columnas:", df.columns)
+
+# Limpiar los nombres de las columnas
+df.columns = df.columns.str.strip()
+
+# Verificar nuevamente los nombres de las columnas
+print("Nombres de las columnas después de limpiar:", df.columns)
+
+# Función para eliminar modificaciones PTM
+def clean_peptide_sequence(peptide_sequence):
+    cleaned_sequence = re.sub(r'\+.*', '', peptide_sequence).strip()
+    return cleaned_sequence
+
+# Función para extraer las modificaciones PTM
+def extract_ptm(peptide_sequence):
+    ptm_match = re.search(r'\+\s*(.*)', peptide_sequence)
+    if ptm_match:
+        return ptm_match.group(1).strip()
+    return ""
+
+# Función para renombrar los péptidos con PTM y posición inicial
+def rename_peptide_with_ptm_and_position(peptide_sequence, starting_position, peptide_dict):
+    cleaned_peptide = clean_peptide_sequence(peptide_sequence)
+    ptm = extract_ptm(peptide_sequence)
+    peptide_length = len(cleaned_peptide)
+
+    if pd.notna(starting_position):
+        base_name = f"{int(starting_position)}P{peptide_length}pep"
+    else:
+        base_name = f"{peptide_length}pep"
+
+    if ptm:
+        base_name += ptm
+    
+    # Manejo de nombres duplicados
+    if base_name in peptide_dict:
+        peptide_dict[base_name] += 1
+        new_name = f"{base_name}-{peptide_dict[base_name]}"
+    else:
+        peptide_dict[base_name] = 1
+        new_name = base_name
+
+    return new_name, cleaned_peptide
+
+# Crear un diccionario para llevar el seguimiento de nombres
+peptide_dict = {}
+
+# Aplicar la función a cada fila del DataFrame
+df[['New Name', 'Cleaned Sequence']] = df.apply(
+    lambda row: pd.Series(rename_peptide_with_ptm_and_position(row['peptide'], row['start'], peptide_dict)),
+    axis=1
+)
+
+# Guardar el archivo modificado como Excel
+output_excel_path = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\MHC II mouse renombrados.xlsx"
+df.to_excel(output_excel_path, index=False)
+print(f"Archivo Excel guardado en: {output_excel_path}")
+
+
+# Generar diccionario 
+# Rutas de los archivos
+input_file = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\MHC II mouse renombrados.xlsx"
+fasta_output_file = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\MHC II mouse.fasta"
+dict_output_file_epitopos = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\MHC II mouse diccionario.txt"
+
+# Leer el archivo Excel
+df = pd.read_excel(input_file)
+
+# Filtrar las columnas necesarias
+df_filtered = df[['New Name', 'Cleaned Sequence']]
+
+# Eliminar duplicados basándose en 'Cleaned Sequence'
+df_unique = df_filtered.drop_duplicates(subset='Cleaned Sequence')
+
+# Escribir el archivo FASTA
+with open(fasta_output_file, 'w') as fasta_file:
+    for index, row in df_unique.iterrows():
+        fasta_file.write(f">{row['New Name']}\n")
+        fasta_file.write(f"{row['Cleaned Sequence']}\n")
+
+print(f"Archivo FASTA generado con éxito: {fasta_output_file}")
+
+# Crear diccionario desde el archivo FASTA y guardarlo en un archivo TXT
+with open(fasta_output_file, 'r') as fasta_file, open(dict_output_file_epitopos, 'w') as dict_file:
+    fasta_dict = {}
+    name = None
+
+    for line in fasta_file:
+        line = line.strip()  # Eliminar espacios y saltos de línea
+        if line.startswith(">"):
+            # Es una línea con el nombre de la secuencia
+            name = line[1:]  # Quitar el ">" al principio
+        else:
+            # Es una línea con la secuencia
+            fasta_dict[name] = line
+            dict_file.write(f"{name}: {line}\n")
+
+print(f"Archivo TXT con diccionario generado con éxito: {dict_output_file_epitopos}")
+
+
+ 
+#Paso 4: Comparacion diccionarios alfa sinucleina con epitopos predichos
+# Función para leer un diccionario desde un archivo y devolverlo como un diccionario de Python
+def leer_diccionario(ruta_archivo):
+    diccionario = {}
+    with open(ruta_archivo, 'r') as archivo:
+        for linea in archivo:
+            clave, secuencia = linea.strip().split(": ")
+            diccionario[clave] = secuencia
+    return diccionario
+
+# Función para buscar coincidencias exactas entre dos diccionarios y también registrar las no coincidencias
+def buscar_coincidencias(diccionario1, diccionario2):
+    coincidencias = []
+    no_coincidencias = []
+    
+    for clave1, secuencia1 in diccionario1.items():
+        encontrada = False
+        for clave2, secuencia2 in diccionario2.items():
+            if secuencia1 == secuencia2:
+                coincidencias.append((clave1, clave2, secuencia1))
+                encontrada = True
+                break
+        if not encontrada:
+            no_coincidencias.append((clave1, secuencia1))
+    
+    return coincidencias, no_coincidencias
+
+# Función para guardar las coincidencias en un archivo de texto en formato diccionario
+def guardar_coincidencias_txt(coincidencias, ruta_salida):
+    with open(ruta_salida, 'w') as archivo_salida:
+        for clave1, clave2, secuencia in coincidencias:
+            archivo_salida.write(f"{clave1}: {secuencia}\n")
+
+# Función para guardar coincidencias y no coincidencias en un archivo Excel con dos hojas
+def guardar_en_excel(coincidencias, no_coincidencias, ruta_excel):
+    # Crear DataFrame para coincidencias
+    df_coincidencias = pd.DataFrame(coincidencias, columns=['Clave Diccionario 1', 'Clave Diccionario 2', 'Secuencia'])
+    
+    # Crear DataFrame para no coincidencias
+    df_no_coincidencias = pd.DataFrame(no_coincidencias, columns=['Clave Diccionario 1', 'Secuencia'])
+    
+    # Guardar ambos DataFrames en un archivo Excel, cada uno en una hoja diferente
+    with pd.ExcelWriter(ruta_excel, engine='openpyxl') as writer:
+        df_coincidencias.to_excel(writer, sheet_name='Coincidencias', index=False)
+        df_no_coincidencias.to_excel(writer, sheet_name='No Coincidencias', index=False)
+
+# Rutas de los diccionarios
+ruta_diccionario1 = dict_output_file_epitopos # Diccionarios epítopos
+ruta_diccionario2 = output_dict_path_1 # Diccionario peptidos alfa sinucleina
+
+# Cargar los dos diccionarios
+diccionario1 = leer_diccionario(ruta_diccionario1)
+diccionario2 = leer_diccionario(ruta_diccionario2)
+
+# Buscar coincidencias y no coincidencias
+coincidencias, no_coincidencias = buscar_coincidencias(diccionario1, diccionario2)
+
+# Guardar coincidencias en un archivo de texto
+coincidencias_diccionario_epitopos = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\Coincidencias AlphaSyn.txt"
+guardar_coincidencias_txt(coincidencias, coincidencias_diccionario_epitopos)
+
+# Guardar coincidencias y no coincidencias en un archivo Excel
+ruta_excel_salida = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\Coincidencias AlphaSyn.xlsx"
+guardar_en_excel(coincidencias, no_coincidencias, ruta_excel_salida)
+
+print("El proceso ha finalizado correctamente. Los resultados han sido guardados.")
+ 
+
+ 
+#Paso 3 búsqueda ocurrencias con mismatch y manteniendo PTM
+def allowed_mismatches(peptide_length):
+    """Devuelve el número de mismatches permitidos según la longitud del péptido."""
+    if peptide_length <= 10:
+        return 1
+    elif 11 <= peptide_length <= 15:
+        return 2
+    else:
+        return 3
+
+def find_occurrences_with_mismatches(pattern, sequence, critical_positions):
+    """Busca coincidencias en una secuencia permitiendo mismatches, pero protegiendo sitios críticos."""
+    matches = []
+    pattern_length = len(pattern)
+    max_mismatches = allowed_mismatches(pattern_length)
+
+    for i in range(len(sequence) - pattern_length + 1):
+        mismatches = 0
+        critical_mismatch = False  # Para rastrear si encontramos un mismatch en una posición crítica
+        for j in range(pattern_length):
+            if pattern[j] != sequence[i + j]:
+                if j in critical_positions:
+                    critical_mismatch = True  # Encontramos un mismatch en una posición crítica
+                    break
+                mismatches += 1
+
+        if not critical_mismatch and mismatches <= max_mismatches:
+            matches.append((i, sequence[i:i + pattern_length], mismatches))
+
+    return matches
+
+def highlight_mismatches(peptide, protein_match):
+    """Resalta las diferencias entre el péptido y la coincidencia en la secuencia de la proteína."""
+    highlighted_peptide = ""
+    highlighted_protein = ""
+
+    for p_residue, prot_residue in zip(peptide, protein_match):
+        if p_residue == prot_residue:
+            highlighted_peptide += p_residue
+            highlighted_protein += prot_residue
+        else:
+            highlighted_peptide += f"[{p_residue}]"
+            highlighted_protein += f"[{prot_residue}]"
+
+    return highlighted_peptide, highlighted_protein
+
+# Definiciones de las funciones para cargar datos
+
+def load_dictionary(dictionary_path):
+    """Carga un diccionario de péptidos desde un archivo de texto."""
+    dictionary = {}
+    with open(dictionary_path, 'r') as file:
+        for line in file:
+            if line.strip():  # Ignorar líneas vacías
+                name, sequence = line.split(":")
+                dictionary[name.strip()] = sequence.strip()
+    return dictionary
+
+def load_fasta(fasta_path):
+    """Carga un proteoma desde un archivo FASTA."""
+    fasta_dict = {}
+    with open(fasta_path, 'r') as file:
+        protein_name = None
+        protein_sequence = []
+        for line in file:
+            line = line.strip()
+            if line.startswith(">"):
+                if protein_name:  # Si ya tenemos una secuencia, la guardamos
+                    fasta_dict[protein_name] = ''.join(protein_sequence)
+                protein_name = line[1:]  # Guardamos el nombre de la nueva proteína sin el ">"
+                protein_sequence = []  # Reiniciamos la secuencia para la nueva proteína
+            else:
+                protein_sequence.append(line)
+        if protein_name:  # Guardar la última proteína
+            fasta_dict[protein_name] = ''.join(protein_sequence)
+    return fasta_dict
+
+# Cargar los diccionarios
+peptides_dict_path = coincidencias_diccionario_epitopos
+proteome_fasta_path = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\UP000001031 A. muciniphila.fasta"
+
+peptides_dict = load_dictionary(peptides_dict_path)
+proteome_dict = load_fasta(proteome_fasta_path)
+
+print(f"Péptidos cargados: {len(peptides_dict)}")
+print(f"Proteoma cargado: {len(proteome_dict)}")
+
+results = []
+total_peptides = len(peptides_dict)
+total_proteins = len(proteome_dict)
+start_time = time.time()
+
+# Buscar coincidencias en el proteoma
+for peptide_key, peptide_seq in tqdm(peptides_dict.items(), desc="Procesando péptidos", leave=False, total=total_peptides):
+    # Extraer solo la parte numérica antes de la 'P'
+    start_position = int(peptide_key.split('P')[0])  # Obtener solo el número antes de 'P'
+    critical_positions = contains_critical_site(peptide_seq, start_position)  # Obtener posiciones críticas
+    for proteome_key, proteome_seq in tqdm(proteome_dict.items(), desc="Procesando proteínas", leave=False, total=total_proteins):
+        matches = find_occurrences_with_mismatches(peptide_seq, proteome_seq, critical_positions)
+        if matches:
+            for match in matches:
+                position, matched_seq, mismatches = match
+                highlighted_peptide, highlighted_protein = highlight_mismatches(peptide_seq, matched_seq)
+                results.append((peptide_key, proteome_key, position, highlighted_peptide, highlighted_protein, mismatches))
+
+# Guardar resultados en un archivo
+output_results_path = r"C:\Users\dennys\Desktop\Resultados oficiales MHC binding prediction\Resultados Coincidencias A. muciniphila.txt"
+
+with open(output_results_path, 'w') as output_file:
+    for result in results:
+        peptide_key, proteome_key, position, highlighted_peptide, highlighted_protein, mismatches = result
+        output_file.write(f"Péptido: {peptide_key}, Proteoma: {proteome_key}, Posición: {position},\n")
+        output_file.write(f"Coincidencia en péptido: {highlighted_peptide}\n")
+        output_file.write(f"Coincidencia en proteoma: {highlighted_protein}\n")
+        output_file.write(f"Mismatches: {mismatches}\n\n")
+
+print(f"Resultados guardados en: {output_results_path}")
+print(f"Tiempo total de ejecución: {time.time() - start_time:.2f} segundos")
